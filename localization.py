@@ -26,9 +26,6 @@ import torch.cuda.amp as amp
 
 warnings.filterwarnings('ignore')
 
-# -------------------------
-# Loss Functions
-# -------------------------
 
 class BoundaryMatchingLoss(nn.Module):
     """Loss function for boundary detection"""
@@ -37,20 +34,18 @@ class BoundaryMatchingLoss(nn.Module):
         self.weight = weight
         
     def forward(self, predictions, targets):
-        # Detect boundaries (transitions from 0->1 or 1->0)
+
         pred_boundaries = self._detect_boundaries(predictions)
         true_boundaries = self._detect_boundaries(targets.float())
         
-        # L2 loss on boundary positions
         boundary_loss = F.mse_loss(pred_boundaries, true_boundaries)
         return self.weight * boundary_loss
     
     def _detect_boundaries(self, sequence):
-        # sequence: (B, T)
-        if sequence.dim() == 3:  # (B, T, 2) -> take argmax
+
+        if sequence.dim() == 3: 
             sequence = sequence.argmax(dim=-1).float()
         
-        # Compute differences to find transitions
         padded = F.pad(sequence, (1, 0), value=0)
         boundaries = torch.abs(sequence - padded[:, :-1])
         return boundaries
@@ -64,9 +59,9 @@ class TemporalFocalLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, inputs, targets):
-        # inputs: (B, T, 2), targets: (B, T)
-        inputs_flat = inputs.reshape(-1, 2)  # Use reshape instead of view
-        targets_flat = targets.view(-1)      # targets should be contiguous
+       
+        inputs_flat = inputs.reshape(-1, 2)  
+        targets_flat = targets.view(-1)    
         
         ce_loss = F.cross_entropy(inputs_flat, targets_flat, reduction='none')
         pt = torch.exp(-ce_loss)
@@ -79,9 +74,6 @@ class TemporalFocalLoss(nn.Module):
         else:
             return focal_loss.view_as(targets)
 
-# -------------------------
-#  Proper AP@IoU Implementation
-# -------------------------
 
 def compute_ap_at_iou_levels(predictions, ground_truths, iou_thresholds=[0.5, 0.75, 0.9, 0.95]):
     """
@@ -97,19 +89,16 @@ def compute_ap_at_iou_levels(predictions, ground_truths, iou_thresholds=[0.5, 0.
             gt_segments = ground_truths[video_id]
             pred_segments = predictions.get(video_id, [])
             
-            if not gt_segments:  # No ground truth segments
+            if not gt_segments: 
                 continue
-                
-            # Sort predictions by confidence (descending)
+
             pred_segments = sorted(pred_segments, key=lambda x: x[0], reverse=True)
-            
-            # For each prediction, check if it matches any ground truth
+        
             gt_matched = [False] * len(gt_segments)
             
             for pred_conf, pred_start, pred_end in pred_segments:
                 all_scores.append(pred_conf)
-                
-                # Find best matching ground truth segment
+            
                 best_iou = 0.0
                 best_gt_idx = -1
                 
@@ -122,14 +111,13 @@ def compute_ap_at_iou_levels(predictions, ground_truths, iou_thresholds=[0.5, 0.
                         best_iou = iou
                         best_gt_idx = gt_idx
                 
-                # Check if match meets IoU threshold
                 if best_iou >= iou_thresh and best_gt_idx >= 0:
-                    all_labels.append(1)  # True positive
+                    all_labels.append(1)  
                     gt_matched[best_gt_idx] = True
                 else:
-                    all_labels.append(0)  # False positive
+                    all_labels.append(0)
         
-        # Compute Average Precision
+
         if len(all_scores) > 0:
             ap = average_precision_score(all_labels, all_scores)
         else:
@@ -162,10 +150,10 @@ def compute_ar_at_n(predictions, ground_truths, n_values=[50, 30, 20, 10, 5], io
         gt_segments = ground_truths[video_id]
         pred_segments = predictions.get(video_id, [])
         
-        if not gt_segments:  # Skip videos with no ground truth
+        if not gt_segments: 
             continue
             
-        # Sort predictions by confidence (descending)
+
         pred_segments = sorted(pred_segments, key=lambda x: x[0], reverse=True)
 
         for n in n_values:
@@ -183,7 +171,7 @@ def compute_ar_at_n(predictions, ground_truths, n_values=[50, 30, 20, 10, 5], io
             recall = len(matched_gt) / len(gt_segments) if gt_segments else 0
             ar_results[n].append(recall)
 
-    # Average across all videos
+
     avg_ar = {f"AR@{n}": np.mean(scores) if scores else 0 for n, scores in ar_results.items()}
     return avg_ar
 
@@ -197,9 +185,6 @@ def compute_final_score(ap_results, ar_results):
     final_score = (1/8) * ap_sum + (1/10) * ar_sum
     return final_score
 
-# -------------------------
-# Improved Temporal Model
-# -------------------------
 
 class ImprovedTemporalDeepfakeLocalizer(nn.Module):
     """Improved model for temporal localization of deepfakes"""
@@ -209,12 +194,11 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
         self.num_classes = num_classes
         self.max_frames = max_frames
         
-        # FIXED: Better video encoder with proper temporal features
+       
         self.video_encoder = r3d_18(pretrained=True)
-        # Remove the final classification layer
         self.video_encoder.fc = nn.Identity()
         
-        # FIXED: Extract intermediate features for better temporal modeling
+       
         self.video_feature_extractor = nn.Sequential(
             self.video_encoder.stem,
             self.video_encoder.layer1,
@@ -223,10 +207,8 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
             self.video_encoder.layer4,
         )
         
-        # Adaptive pooling to get consistent temporal dimension
+     
         self.temporal_pool = nn.AdaptiveAvgPool3d((max_frames, 1, 1))
-        
-        # Audio encoders (if used)
         if self.use_audio:
             self.mfcc_encoder = AudioEncoder(13, 128, 64)
             self.mel_spec_encoder = AudioEncoder(80, 160, 80)
@@ -239,22 +221,22 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
                 nn.Linear(64 * 32, 64),
                 nn.ReLU()
             )
-            audio_feature_size = 64 + 80 + 64  # 208
+            audio_feature_size = 64 + 80 + 64  
         else:
             audio_feature_size = 0
         
-        # Feature dimensions
-        video_feature_size = 512  # R3D-18 feature size
+      
+        video_feature_size = 512  
         total_feature_size = video_feature_size + audio_feature_size
         
-        # IMPROVED: Multi-scale temporal processing
+
         self.multi_scale_conv = nn.ModuleList([
             nn.Conv1d(total_feature_size, 256, kernel_size=3, padding=1),
             nn.Conv1d(total_feature_size, 256, kernel_size=5, padding=2),
             nn.Conv1d(total_feature_size, 256, kernel_size=7, padding=3),
         ])
         
-        # Feature fusion
+        
         self.feature_fusion = nn.Sequential(
             nn.Conv1d(256 * 3, 512, kernel_size=1),
             nn.ReLU(),
@@ -262,7 +244,7 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
             nn.Dropout(0.2)
         )
         
-        # IMPROVED: Better temporal transformer
+       
         self.temporal_transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=512,
@@ -274,7 +256,7 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
             num_layers=4
         )
         
-        # IMPROVED: Boundary-aware detection head
+
         self.boundary_detector = nn.Sequential(
             nn.Conv1d(512, 256, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -285,7 +267,7 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
             nn.Conv1d(128, num_classes, kernel_size=1)
         )
         
-        # Enhanced confidence scoring
+
         self.confidence_head = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(),
@@ -311,51 +293,42 @@ class ImprovedTemporalDeepfakeLocalizer(nn.Module):
     def forward(self, video, audio_features=None):
         batch_size = video.size(0)
         
-        # FIXED: Proper video feature extraction with temporal preservation
-        # video: (B, C, T, H, W)
-        video_features = self.video_feature_extractor(video)  # (B, 512, T', H', W')
+        video_features = self.video_feature_extractor(video)  
         
-        # Pool spatial dimensions, keep temporal
-        video_features = self.temporal_pool(video_features)  # (B, 512, max_frames, 1, 1)
-        video_features = video_features.squeeze(-1).squeeze(-1)  # (B, 512, max_frames)
-        video_features = video_features.permute(0, 2, 1)  # (B, max_frames, 512)
+        video_features = self.temporal_pool(video_features) 
+        video_features = video_features.squeeze(-1).squeeze(-1)  
+        video_features = video_features.permute(0, 2, 1)  
         
-        # Add audio features if available
+        
         if self.use_audio and audio_features is not None:
-            audio_encoding = self.encode_audio(audio_features)  # (B, audio_dim)
+            audio_encoding = self.encode_audio(audio_features)  
             audio_temporal = audio_encoding.unsqueeze(1).expand(-1, self.max_frames, -1)
             temporal_features = torch.cat([video_features, audio_temporal], dim=2)
         else:
             temporal_features = video_features
         
-        # Multi-scale processing
-        conv_input = temporal_features.permute(0, 2, 1)  # (B, features, T)
+
+        conv_input = temporal_features.permute(0, 2, 1)  
         multi_scale_outputs = []
         for conv_layer in self.multi_scale_conv:
             multi_scale_outputs.append(conv_layer(conv_input))
         
-        # Fuse multi-scale features
-        fused_features = torch.cat(multi_scale_outputs, dim=1)  # (B, 768, T)
-        fused_features = self.feature_fusion(fused_features)  # (B, 512, T)
+
+        fused_features = torch.cat(multi_scale_outputs, dim=1)  
+        fused_features = self.feature_fusion(fused_features)  
         
-        # Apply temporal transformer
-        transformer_input = fused_features.permute(0, 2, 1)  # (B, T, 512)
-        enhanced_features = self.temporal_transformer(transformer_input)  # (B, T, 512)
+       
+        transformer_input = fused_features.permute(0, 2, 1)  
+        enhanced_features = self.temporal_transformer(transformer_input)  
         
-        # Boundary detection
-        conv_input = enhanced_features.permute(0, 2, 1)  # (B, 512, T)
-        boundary_logits = self.boundary_detector(conv_input)  # (B, num_classes, T)
-        boundary_logits = boundary_logits.permute(0, 2, 1)  # (B, T, num_classes)
-        
-        # Confidence scoring
-        confidence_scores = self.confidence_head(enhanced_features)  # (B, T, 1)
-        confidence_scores = confidence_scores.squeeze(-1)  # (B, T)
+       
+        conv_input = enhanced_features.permute(0, 2, 1)
+        boundary_logits = self.boundary_detector(conv_input) 
+        boundary_logits = boundary_logits.permute(0, 2, 1) 
+        confidence_scores = self.confidence_head(enhanced_features)  
+        confidence_scores = confidence_scores.squeeze(-1)  
         
         return boundary_logits, confidence_scores
-
-# -------------------------
-# Better Dataset Implementation
-# -------------------------
 
 class ImprovedTemporalLocalizationDataset(Dataset):
     def __init__(self, video_dir, metadata_file, max_frames=64, fps=25, 
@@ -367,8 +340,7 @@ class ImprovedTemporalLocalizationDataset(Dataset):
         self.sample_rate = sample_rate
         self.use_audio = use_audio
         self.mode = mode
-        
-        # FIXED: Better metadata loading
+
         if isinstance(metadata_file, str) and metadata_file.endswith('.json'):
             with open(metadata_file, 'r') as f:
                 self.metadata = json.load(f)
@@ -376,8 +348,7 @@ class ImprovedTemporalLocalizationDataset(Dataset):
             self.metadata = self._create_metadata_from_dict(metadata_file)
         else:
             raise ValueError("metadata_file must be a JSON file path or dictionary")
-        
-        # Data transforms
+    
         if mode == 'train':
             self.transform = T.Compose([
                 T.RandomHorizontalFlip(p=0.3),
@@ -396,16 +367,16 @@ class ImprovedTemporalLocalizationDataset(Dataset):
         """Create metadata from simple label dict - IMPROVED with realistic segments"""
         metadata = []
         for vid_id, label in label_dict.items():
-            # For demo purposes, create more realistic fake segments
-            if label == 1:  # Fake video
-                # Generate random but realistic fake segments
-                np.random.seed(int(vid_id))  # Consistent segments for same video
-                num_segments = np.random.randint(1, 4)  # 1-3 fake segments
+
+            if label == 1:  
+          
+                np.random.seed(int(vid_id)) 
+                num_segments = np.random.randint(1, 4) 
                 fake_segments = []
                 
                 for _ in range(num_segments):
-                    start = np.random.uniform(0.5, 8.0)  # Random start time
-                    duration = np.random.uniform(1.0, 3.0)  # Random duration
+                    start = np.random.uniform(0.5, 8.0)
+                    duration = np.random.uniform(1.0, 3.0)  
                     fake_segments.append([start, start + duration])
             else:
                 fake_segments = []
@@ -432,7 +403,7 @@ class ImprovedTemporalLocalizationDataset(Dataset):
                 print(f"Warning: Could not open video {video_path}")
                 return self._get_dummy_video_and_labels()
             
-            # Get video properties
+        
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             video_fps = cap.get(cv2.CAP_PROP_FPS) or self.fps
             
@@ -440,14 +411,14 @@ class ImprovedTemporalLocalizationDataset(Dataset):
                 cap.release()
                 return self._get_dummy_video_and_labels()
             
-            # Better frame sampling strategy
+          
             if total_frames <= self.max_frames:
                 frame_indices = list(range(total_frames))
-                # Pad the indices if necessary
+               
                 while len(frame_indices) < self.max_frames:
                     frame_indices.append(frame_indices[-1] if frame_indices else 0)
             else:
-                # Uniform sampling across the video
+             
                 frame_indices = np.linspace(0, total_frames - 1, self.max_frames, dtype=int)
             
             frames = []
@@ -458,7 +429,7 @@ class ImprovedTemporalLocalizationDataset(Dataset):
                 ret, frame = cap.read()
                 
                 if not ret:
-                    # Use last valid frame if read fails
+                  
                     if frames:
                         frame = frames[-1]
                     else:
@@ -470,18 +441,17 @@ class ImprovedTemporalLocalizationDataset(Dataset):
                 frame = self.transform(Image.fromarray(frame))
                 frames.append(frame)
                 
-                # Determine label based on temporal segments
+            
                 frame_time = idx / video_fps
                 is_fake = self._is_frame_fake(frame_time, fake_segments)
                 frame_labels.append(1 if is_fake else 0)
             
             cap.release()
             
-            # Ensure exact length
             frames = frames[:self.max_frames]
             frame_labels = frame_labels[:self.max_frames]
             
-            video_tensor = torch.stack(frames).permute(1, 0, 2, 3)  # (C, T, H, W)
+            video_tensor = torch.stack(frames).permute(1, 0, 2, 3)  
             labels_tensor = torch.tensor(frame_labels, dtype=torch.long)
             
             return video_tensor, labels_tensor
@@ -520,14 +490,14 @@ class ImprovedTemporalLocalizationDataset(Dataset):
             if len(y) == 0:
                 return self._get_dummy_audio_features()
             
-            # Process audio
+ 
             max_length = int(self.sample_rate * self.audio_duration)
             if len(y) > max_length:
                 y = y[:max_length]
             elif len(y) < max_length:
                 y = np.pad(y, (0, max_length - len(y)))
 
-            # Extract features
+
             mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
             mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=80)
 
@@ -560,10 +530,10 @@ class ImprovedTemporalLocalizationDataset(Dataset):
         
         video_path = os.path.join(self.video_dir, video_file)
         
-        # Get video and frame-level labels
+        
         video_tensor, frame_labels = self._read_video_with_temporal_info(video_path, fake_segments)
         
-        # Get audio features if requested
+
         audio_features = None
         if self.use_audio:
             audio_features = self._extract_audio_features(video_path)
@@ -573,29 +543,23 @@ class ImprovedTemporalLocalizationDataset(Dataset):
         else:
             return video_tensor, frame_labels, fake_segments
 
-# -------------------------
-# Custom Collate Function
-# -------------------------
+
 
 def collate_fn(batch):
     """Custom collate function to handle variable-length video tensors"""
-    if len(batch[0]) == 4:  # With audio
+    if len(batch[0]) == 4:  
         videos, audio_features, frame_labels, fake_segments = zip(*batch)
         use_audio = True
-    else:  # Without audio
+    else:
         videos, frame_labels, fake_segments = zip(*batch)
         use_audio = False
 
-    # Find the maximum length in the batch
-    max_len = max(v.size(1) for v in videos)  # Get max temporal dimension (T)
-
-    # Pad videos and frame_labels to max_len
+   
+    max_len = max(v.size(1) for v in videos)  
     padded_videos = torch.stack([F.pad(v, (0, 0, 0, 0, 0, max_len - v.size(1))) for v in videos])
     padded_labels = torch.stack([F.pad(l, (0, max_len - l.size(0))) for l in frame_labels])
 
     if use_audio:
-        # Handle audio features (assume they are already fixed size or pad if needed)
-        # For simplicity, assume audio features are pre-processed to a fixed size in _extract_audio_features
         audio_batch = {}
         for key in audio_features[0].keys():
             audio_batch[key] = torch.stack([af[key] for af in audio_features])
@@ -603,9 +567,7 @@ def collate_fn(batch):
     else:
         return padded_videos, padded_labels, list(fake_segments)
 
-# -------------------------
-# Better Evaluation
-# -------------------------
+
 
 def evaluate_temporal_model_improved(model, dataloader, device):
     """IMPROVED evaluation with proper metrics"""
@@ -641,22 +603,20 @@ def evaluate_temporal_model_improved(model, dataloader, device):
                 video_idx = batch_idx * videos.size(0) + i
                 video_id = f"{video_idx:06d}.mp4"
                 
-                # Extract segments from predictions
+               
                 segments = extract_segments_from_predictions(
                     probs[i].cpu().numpy(), 
                     confidence_scores[i].cpu().numpy(), 
-                    threshold=0.3,  # Lower threshold for better recall
+                    threshold=0.3,  
                     min_duration=0.5
                 )
                 
                 video_predictions[video_id] = segments
                 video_ground_truths[video_id] = fake_segments[i] if isinstance(fake_segments[i], list) else fake_segments
-                
-                # Collect frame-level predictions for overall AP
+            
                 all_predictions.extend(probs[i].cpu().numpy())
                 all_labels.extend(frame_labels[i].cpu().numpy())
 
-    # Compute metrics
     frame_ap = average_precision_score(all_labels, all_predictions) if len(set(all_labels)) > 1 else 0.0
     ap_iou_results = compute_ap_at_iou_levels(video_predictions, video_ground_truths)
     ar_results = compute_ar_at_n(video_predictions, video_ground_truths)
@@ -670,9 +630,6 @@ def evaluate_temporal_model_improved(model, dataloader, device):
         **ar_results
     }
 
-# -------------------------
-# AudioEncoder class 
-# -------------------------
 
 class AudioEncoder(nn.Module):
     def __init__(self, input_size, hidden_size=128, output_size=64):
@@ -703,7 +660,7 @@ def extract_segments_from_predictions(fake_probs, confidences, threshold=0.5, mi
     """Extract fake segments from frame-level predictions"""
     segments = []
     
-    # Find contiguous segments above threshold
+
     above_threshold = fake_probs > threshold
     
     start_idx = None
@@ -711,7 +668,7 @@ def extract_segments_from_predictions(fake_probs, confidences, threshold=0.5, mi
         if is_fake and start_idx is None:
             start_idx = i
         elif not is_fake and start_idx is not None:
-            # End of segment
+
             duration = (i - start_idx) / fps
             if duration >= min_duration:
                 avg_confidence = confidences[start_idx:i].mean()
@@ -720,7 +677,7 @@ def extract_segments_from_predictions(fake_probs, confidences, threshold=0.5, mi
                 segments.append([float(avg_confidence), float(start_time), float(end_time)])
             start_idx = None
     
-    # Handle case where video ends while in a fake segment
+
     if start_idx is not None:
         duration = (len(fake_probs) - start_idx) / fps
         if duration >= min_duration:
@@ -728,24 +685,20 @@ def extract_segments_from_predictions(fake_probs, confidences, threshold=0.5, mi
             start_time = start_idx / fps
             end_time = len(fake_probs) / fps
             segments.append([float(avg_confidence), float(start_time), float(end_time)])
-    
-    # Sort by confidence (descending)
+
     segments.sort(key=lambda x: x[0], reverse=True)
     
     return segments
 
-# -------------------------
-# Training Function
-# -------------------------
 
 def train_temporal_model_improved(model, train_loader, val_loader=None, num_epochs=15, device='cuda',
                                 learning_rate=1e-4, log_dir='runs/temporal_improved', patience=7):
     
-    # Improved loss combination
-    focal_loss = TemporalFocalLoss(alpha=2, gamma=2.5)  # More aggressive focal loss
+
+    focal_loss = TemporalFocalLoss(alpha=2, gamma=2.5)
     boundary_loss = BoundaryMatchingLoss(weight=0.3)
     
-    # Better optimizer and scheduler
+
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=3, T_mult=2, eta_min=1e-6)
     scaler = amp.GradScaler()
@@ -782,14 +735,13 @@ def train_temporal_model_improved(model, train_loader, val_loader=None, num_epoc
             with amp.autocast():
                 boundary_logits, confidence_scores = model(videos, audio_features)
                 
-                # Improved loss calculation
+               
                 focal_loss_val = focal_loss(boundary_logits, frame_labels)
                 boundary_loss_val = boundary_loss(boundary_logits, frame_labels)
                 
-                # Confidence regularization
-                confidence_reg = 0.01 * torch.mean((confidence_scores - 0.5) ** 2)
                 
-                # Total loss with regularization
+                confidence_reg = 0.01 * torch.mean((confidence_scores - 0.5) ** 2)
+       
                 total_loss = focal_loss_val + boundary_loss_val + confidence_reg
             
             scaler.scale(total_loss).backward()
@@ -808,12 +760,11 @@ def train_temporal_model_improved(model, train_loader, val_loader=None, num_epoc
                 'Boundary': f'{boundary_loss_val.item():.4f}'
             })
         
-        # Average losses
+
         train_loss /= len(train_loader)
         train_focal_loss /= len(train_loader)
         train_boundary_loss /= len(train_loader)
         
-        # Logging
         writer.add_scalar('Loss/Train_Total', train_loss, epoch)
         writer.add_scalar('Loss/Train_Focal', train_focal_loss, epoch)
         writer.add_scalar('Loss/Train_Boundary', train_boundary_loss, epoch)
@@ -821,11 +772,11 @@ def train_temporal_model_improved(model, train_loader, val_loader=None, num_epoc
         
         print(f"Epoch {epoch+1}: Train Loss: {train_loss:.4f}")
         
-        # Validation
+
         if val_loader is not None:
             val_metrics = evaluate_temporal_model_improved(model, val_loader, device)
             
-            # Log all metrics
+  
             for metric_name, metric_value in val_metrics.items():
                 writer.add_scalar(f'Val/{metric_name}', metric_value, epoch)
             
@@ -834,7 +785,7 @@ def train_temporal_model_improved(model, train_loader, val_loader=None, num_epoc
             print(f"          Val AP@0.5: {val_metrics['AP@0.5']:.4f}")
             print(f"          Val AR@50: {val_metrics['AR@50']:.4f}")
             
-            # Use final competition score for best model selection
+
             current_score = val_metrics['final_score']
             
             if current_score > best_val_score:
@@ -856,9 +807,7 @@ def train_temporal_model_improved(model, train_loader, val_loader=None, num_epoc
     
     return model
 
-# -------------------------
-# Prediction Generation
-# -------------------------
+
 
 def generate_task2_predictions_improved(model, test_loader, device, output_file, video_filenames=None):
     """Generate Task 2 format predictions with proper video naming"""
@@ -880,21 +829,20 @@ def generate_task2_predictions_improved(model, test_loader, device, output_file,
             videos = videos.to(device)
             boundary_logits, confidence_scores = model(videos, audio_features)
             
-            # Get predictions
+
             probs = F.softmax(boundary_logits, dim=-1)
-            fake_probs = probs[:, :, 1]  # (B, T)
-            confidences = confidence_scores  # (B, T)
+            fake_probs = probs[:, :, 1]  
+            confidences = confidence_scores  
             
             for i in range(videos.size(0)):
                 video_idx = batch_idx * videos.size(0) + i
                 
-                # Use provided filenames or generate default ones
+
                 if video_filenames and video_idx < len(video_filenames):
                     video_id = video_filenames[video_idx]
                 else:
                     video_id = f"{video_idx:06d}.mp4"
                 
-                # Extract segments with multiple thresholds for better coverage
                 segments = []
                 for threshold in [0.3, 0.4, 0.5, 0.6, 0.7]:
                     thresh_segments = extract_segments_from_predictions(
@@ -905,16 +853,16 @@ def generate_task2_predictions_improved(model, test_loader, device, output_file,
                     )
                     segments.extend(thresh_segments)
                 
-                # Remove duplicates and sort by confidence
+
                 unique_segments = []
                 for seg in segments:
                     is_duplicate = False
                     for existing in unique_segments:
-                        # Check for significant overlap
+                    
                         overlap = calculate_temporal_iou(seg[1], seg[2], existing[1], existing[2])
                         if overlap > 0.7:
                             is_duplicate = True
-                            # Keep the one with higher confidence
+                            
                             if seg[0] > existing[0]:
                                 unique_segments.remove(existing)
                                 unique_segments.append(seg)
@@ -922,19 +870,17 @@ def generate_task2_predictions_improved(model, test_loader, device, output_file,
                     if not is_duplicate:
                         unique_segments.append(seg)
                 
-                # Sort by confidence and limit number of segments
+                
                 unique_segments.sort(key=lambda x: x[0], reverse=True)
-                unique_segments = unique_segments[:10]  # Limit to top 10 segments
+                unique_segments = unique_segments[:10]  
                 
                 predictions[video_id] = unique_segments
     
-    # Save predictions in Task 2 format
+
     with open(output_file, 'w') as f:
         json.dump(predictions, f, indent=2)
     
     print(f"✅ Task 2 predictions saved to {output_file}")
-    
-    # Print statistics
     total_videos = len(predictions)
     videos_with_segments = sum(1 for segments in predictions.values() if segments)
     total_segments = sum(len(segments) for segments in predictions.values())
@@ -945,9 +891,7 @@ def generate_task2_predictions_improved(model, test_loader, device, output_file,
     print(f"   Total segments detected: {total_segments}")
     print(f"   Average segments per video: {total_segments/total_videos:.2f}")
 
-# -------------------------
-# Main Execution with Better Error Handling
-# -------------------------
+
 
 def main():
     parser = argparse.ArgumentParser(description="Train Improved Temporal Deepfake Localizer")
@@ -968,7 +912,7 @@ def main():
     
     args = parser.parse_args()
 
-    # Default label dict for testing
+
     label_dict = {
         "08": 1, "09": 0, "10": 1, "11": 1,
         "12": 1, "13": 0, "14": 1, "15": 0,
@@ -995,7 +939,7 @@ def main():
         val_size = len(dataset) - train_size
         train_dataset, val_dataset = torch.utils.data.random_split(
             dataset, [train_size, val_size],
-            generator=torch.Generator().manual_seed(42)  # Reproducible split
+            generator=torch.Generator().manual_seed(42)  
         )
         
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
@@ -1005,19 +949,18 @@ def main():
         
         print(f"📊 Data split: {len(train_dataset)} train, {len(val_dataset)} validation")
         
-        # Create improved model
+
         print("🏗️ Creating improved temporal localization model...")
         model = ImprovedTemporalDeepfakeLocalizer(
             use_audio=args.use_audio, 
             max_frames=args.max_frames
         ).to(device)
         
-        # Print model info
+      
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"📈 Model parameters: {total_params:,} total, {trainable_params:,} trainable")
         
-        # Train the model
         print("🎯 Starting improved temporal localization training...")
         trained_model = train_temporal_model_improved(
             model, train_loader, val_loader, 
@@ -1025,7 +968,6 @@ def main():
             learning_rate=args.learning_rate
         )
         
-        # Final evaluation
         print("\n📊 Final evaluation on validation set...")
         final_metrics = evaluate_temporal_model_improved(trained_model, val_loader, device)
         
@@ -1041,7 +983,6 @@ def main():
         for n in [50, 30, 20, 10, 5]:
             print(f"   AR@{n}: {final_metrics[f'AR@{n}']:.4f}")
         
-        # Save the model
         torch.save({
             'model_state_dict': trained_model.state_dict(),
             'model_config': {
@@ -1055,7 +996,7 @@ def main():
         
         print(f"💾 Model saved to {args.save_model}")
         
-        # Generate predictions
+
         print("\n🔮 Generating Task 2 predictions...")
         generate_task2_predictions_improved(
             trained_model, val_loader, device, args.output_file

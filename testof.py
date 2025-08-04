@@ -1,15 +1,3 @@
-"""
-Unified Deepfake Detection Script
-Supports:
-- Task 1: Video-level Deepfake Detection (AUC)
-- Task 2: Temporal Localization (AP and AR)
-
-Run with:
-    python combined_task1_task2.py --task 1   # for video-level
-    python combined_task1_task2.py --task 2   # for temporal localization
-    --video-dir <path> --metadata-file <path> --use-audio --num-epochs 10 --learning-rate 1e-4
-"""
-
 import os
 import json
 import torch
@@ -38,9 +26,6 @@ import torch.cuda.amp as amp
 
 warnings.filterwarnings('ignore')
 
-# -------------------------
-# Utility Functions
-# -------------------------
 
 def read_video_frames(video_path, max_frames, start_frame, transform):
     cap = cv2.VideoCapture(video_path)
@@ -118,10 +103,6 @@ def get_dummy_audio_features(audio_duration, sample_rate):
         'waveform': torch.zeros(target_length)
     }
 
-# -------------------------
-# Loss Functions
-# -------------------------
-
 class LabelSmoothingLoss(nn.Module):
     def __init__(self, smoothing=0.1):
         super().__init__()
@@ -167,10 +148,6 @@ class TemporalFocalLoss(nn.Module):
         pt = torch.exp(-ce_loss)
         focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
         return focal_loss.mean() if self.reduction == 'mean' else focal_loss.sum()
-
-# -------------------------
-# Metric Functions
-# -------------------------
 
 def compute_auc(predictions, labels):
     probs = F.softmax(predictions, dim=-1)[:, :, 1].detach().cpu().numpy()
@@ -241,11 +218,6 @@ def compute_final_score(ap_results, ar_results):
     ap_sum = sum(ap_results[f"AP@{iou}"] for iou in [0.5, 0.75, 0.9, 0.95])
     ar_sum = sum(ar_results[f"AR@{n}"] for n in [50, 30, 20, 10, 5])
     return (1/8) * ap_sum + (1/10) * ar_sum
-
-# -------------------------
-# Dataset
-# -------------------------
-
 class DeepfakeDataset(Dataset):
     def __init__(self, video_dir, metadata_file, max_frames=32, start_frame=200, 
                  audio_duration=5.0, sample_rate=16000, use_audio=True, task='task1', mode='train'):
@@ -327,10 +299,6 @@ def collate_fn(batch):
         audio_batch = {key: torch.stack([af[key] for af in audio_features]) for key in audio_features[0].keys()}
         return padded_videos, audio_batch, frame_labels, list(fake_segments)
     return padded_videos, frame_labels, list(fake_segments)
-
-# -------------------------
-# Models
-# -------------------------
 
 class AudioEncoder(nn.Module):
     def __init__(self, input_size, hidden_size=128, output_size=64):
@@ -465,9 +433,6 @@ class DeepfakeDetector(nn.Module):
             confidence_scores = self.confidence_head(enhanced_features).squeeze(-1)
             return boundary_logits, confidence_scores
 
-# -------------------------
-# Training Functions
-# -------------------------
 
 def train_model(model, train_loader, val_loader, num_epochs, device, learning_rate, log_dir, task):
     criterion = LabelSmoothingLoss() if task == 'task2' else nn.BCELoss()
@@ -579,9 +544,6 @@ def evaluate_model(model, dataloader, device, task):
     
     return total_loss / len(dataloader), total_metric / len(dataloader)
 
-# -------------------------
-# Prediction Generation
-# -------------------------
 
 def generate_predictions(model, test_loader, device, output_file, task, video_filenames=None):
     model.eval()
@@ -642,9 +604,7 @@ def generate_predictions(model, test_loader, device, output_file, task, video_fi
         total_segments = sum(len(segs) for segs in predictions.values())
         print(f"📊 Prediction Statistics: Total videos: {total_videos}, Videos with segments: {videos_with_segments}, Total segments: {total_segments}, Avg segments per video: {total_segments/total_videos:.2f}")
 
-# -------------------------
-# Visualization Functions
-# -------------------------
+
 
 def plot_training_history(history):
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
@@ -719,9 +679,6 @@ def visualize_predictions(model, dataset, idx, device, task):
     plt.tight_layout()
     plt.show()
 
-# -------------------------
-# Main Execution
-# -------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Unified Deepfake Detection")
